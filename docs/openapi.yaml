@@ -1,0 +1,170 @@
+openapi: 3.0.3
+info:
+  title: Subscription API
+  version: 1.0.0
+paths:
+  /subscriptions:
+    post:
+      summary: Create subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "400":
+          description: Bad request
+    get:
+      summary: List subscriptions
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: service_name
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of subscriptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Subscription"
+  /subscriptions/{id}:
+    get:
+      summary: Get subscription by id
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionID"
+      responses:
+        "200":
+          description: Subscription
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "404":
+          description: Not found
+    put:
+      summary: Update subscription
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubscriptionRequest"
+      responses:
+        "200":
+          description: Updated subscription
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "404":
+          description: Not found
+    delete:
+      summary: Delete subscription
+      parameters:
+        - $ref: "#/components/parameters/SubscriptionID"
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+  /subscriptions/total:
+    get:
+      summary: Calculate total subscription price for period
+      parameters:
+        - name: start_date
+          in: query
+          required: true
+          schema:
+            type: string
+            example: 07-2025
+        - name: end_date
+          in: query
+          required: true
+          schema:
+            type: string
+            example: 12-2025
+        - name: user_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: service_name
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Total price
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                    example: 2400
+components:
+  parameters:
+    SubscriptionID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    SubscriptionRequest:
+      type: object
+      required:
+        - service_name
+        - price
+        - user_id
+        - start_date
+      properties:
+        service_name:
+          type: string
+          example: Yandex Plus
+        price:
+          type: integer
+          example: 400
+        user_id:
+          type: string
+          format: uuid
+          example: 60601fee-2bf1-4721-ae6f-7636e79a0cba
+        start_date:
+          type: string
+          example: 07-2025
+        end_date:
+          type: string
+          example: 12-2025
+    Subscription:
+      allOf:
+        - $ref: "#/components/schemas/SubscriptionRequest"
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
