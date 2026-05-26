@@ -5,11 +5,13 @@ import (
 	"errors"
 	"log"
 	nethttp "net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/en7ka/Effective_Mobile_testovoe.git/internal/model"
 	"github.com/en7ka/Effective_Mobile_testovoe.git/internal/service"
+	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 )
 
@@ -18,18 +20,21 @@ const monthLayout = "01-2006"
 type SubscriptionHandler struct {
 	service *service.SubscriptionService
 	logger  *log.Logger
+	validate *validator.Validate
 }
 
 func NewSubscriptionHandler(service *service.SubscriptionService, logger *log.Logger) *SubscriptionHandler {
+	validate := validator.New()
+	_ = validate.RegisterValidation("month", validateMonth)
+
 	return &SubscriptionHandler{
-		service: service,
-		logger:  logger,
+		service:  service,
+		logger:   logger,
+		validate: validate,
 	}
 }
 
 func (h *SubscriptionHandler) HandleSubscriptions(w nethttp.ResponseWriter, r *nethttp.Request) {
-	h.logger.Printf("request method=%s path=%s", r.Method, r.URL.Path)
-
 	switch r.Method {
 	case nethttp.MethodPost:
 		h.createSubscription(w, r)
@@ -41,8 +46,6 @@ func (h *SubscriptionHandler) HandleSubscriptions(w nethttp.ResponseWriter, r *n
 }
 
 func (h *SubscriptionHandler) HandleSubscriptionByID(w nethttp.ResponseWriter, r *nethttp.Request) {
-	h.logger.Printf("request method=%s path=%s", r.Method, r.URL.Path)
-
 	id, err := uuid.Parse(strings.TrimPrefix(r.URL.Path, "/subscriptions/"))
 	if err != nil {
 		writeError(w, nethttp.StatusBadRequest, "invalid subscription id")
@@ -62,8 +65,6 @@ func (h *SubscriptionHandler) HandleSubscriptionByID(w nethttp.ResponseWriter, r
 }
 
 func (h *SubscriptionHandler) HandleTotal(w nethttp.ResponseWriter, r *nethttp.Request) {
-	h.logger.Printf("request method=%s path=%s", r.Method, r.URL.Path)
-
 	if r.Method != nethttp.MethodGet {
 		writeError(w, nethttp.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -106,6 +107,11 @@ func (h *SubscriptionHandler) createSubscription(w nethttp.ResponseWriter, r *ne
 		return
 	}
 
+	if err := h.validate.Struct(request); err != nil {
+		writeError(w, nethttp.StatusBadRequest, requestValidationMessage(err))
+		return
+	}
+
 	subscription, err := request.toModel(uuid.Nil)
 	if err != nil {
 		writeError(w, nethttp.StatusBadRequest, err.Error())
@@ -138,6 +144,11 @@ func (h *SubscriptionHandler) listSubscriptions(w nethttp.ResponseWriter, r *net
 		return
 	}
 
+	filter.Limit, filter.Offset, ok = paginationFromQuery(w, r)
+	if !ok {
+		return
+	}
+
 	subscriptions, err := h.service.List(r.Context(), filter)
 	if err != nil {
 		h.handleServiceError(w, err)
@@ -156,6 +167,11 @@ func (h *SubscriptionHandler) updateSubscription(w nethttp.ResponseWriter, r *ne
 	var request subscriptionRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		writeError(w, nethttp.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if err := h.validate.Struct(request); err != nil {
+		writeError(w, nethttp.StatusBadRequest, requestValidationMessage(err))
 		return
 	}
 
@@ -217,11 +233,11 @@ func (h *SubscriptionHandler) handleServiceError(w nethttp.ResponseWriter, err e
 }
 
 type subscriptionRequest struct {
-	ServiceName string  `json:"service_name"`
-	Price       int     `json:"price"`
-	UserID      string  `json:"user_id"`
-	StartDate   string  `json:"start_date"`
-	EndDate     *string `json:"end_date,omitempty"`
+	ServiceName string  `json:"service_name" validate:"required"`
+	Price       int     `json:"price" validate:"gt=0"`
+	UserID      string  `json:"user_id" validate:"required,uuid"`
+	StartDate   string  `json:"start_date" validate:"required,month"`
+	EndDate     *string `json:"end_date,omitempty" validate:"omitempty,month"`
 }
 
 func (r subscriptionRequest) toModel(id uuid.UUID) (model.Subscription, error) {
@@ -291,6 +307,68 @@ func parseMonth(value string) (time.Time, error) {
 
 func formatMonth(value time.Time) string {
 	return value.Format(monthLayout)
+}
+
+func paginationFromQuery(w nethttp.ResponseWriter, r *nethttp.Request) (int, int, bool) {
+	query := r.URL.Query()
+
+	limit := model.DefaultLimit
+	if value := query.Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			writeError(w, nethttp.StatusBadRequest, "limit must be a positive integer")
+			return 0, 0, false
+		}
+
+		if parsed > model.MaxLimit {
+			writeError(w, nethttp.StatusBadRequest, "limit must be less than or equal to "+strconv.Itoa(model.MaxLimit))
+			return 0, 0, false
+		}
+
+		limit = parsed
+	}
+
+	offset := 0
+	if value := query.Get("offset"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			writeError(w, nethttp.StatusBadRequest, "offset must be a non-negative integer")
+			return 0, 0, false
+		}
+
+		offset = parsed
+	}
+
+	return limit, offset, true
+}
+
+func validateMonth(fl validator.FieldLevel) bool {
+	value := fl.Field().String()
+	_, err := parseMonth(value)
+	return err == nil
+}
+
+func requestValidationMessage(err error) string {
+	var validationErrors validator.ValidationErrors
+	if !errors.As(err, &validationErrors) || len(validationErrors) == 0 {
+		return err.Error()
+	}
+
+	fieldError := validationErrors[0]
+	switch fieldError.Field() {
+	case "ServiceName":
+		return "service_name is required"
+	case "Price":
+		return "price must be greater than 0"
+	case "UserID":
+		return "invalid user_id"
+	case "StartDate":
+		return "invalid start_date, use MM-YYYY"
+	case "EndDate":
+		return "invalid end_date, use MM-YYYY"
+	default:
+		return fieldError.Field() + " is invalid"
+	}
 }
 
 func writeJSON(w nethttp.ResponseWriter, status int, data any) {

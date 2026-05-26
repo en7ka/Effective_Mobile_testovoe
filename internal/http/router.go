@@ -1,13 +1,16 @@
 package http
 
-import nethttp "net/http"
+import (
+	"log"
+	nethttp "net/http"
+)
 
-func NewRouter(handler *SubscriptionHandler) nethttp.Handler {
+func NewRouter(handler *SubscriptionHandler, logger *log.Logger) nethttp.Handler {
 	mux := nethttp.NewServeMux()
 
 	mux.HandleFunc("/subscriptions/total", handler.HandleTotal)
 	mux.HandleFunc("/subscriptions/", handler.HandleSubscriptionByID)
 	mux.HandleFunc("/subscriptions", handler.HandleSubscriptions)
 
-	return mux
+	return loggingMiddleware(logger)(rateLimitMiddleware(10, 20)(mux))
 }

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/en7ka/Effective_Mobile_testovoe.git/internal/model"
 	"github.com/google/uuid"
@@ -65,36 +64,18 @@ func (r *SubscriptionRepository) GetByID(ctx context.Context, id uuid.UUID) (mod
 func (r *SubscriptionRepository) List(ctx context.Context, filter model.SubscriptionFilter) ([]model.Subscription, error) {
 	query := `
 		SELECT id, service_name, price, user_id, start_date, end_date, created_at, updated_at
-		FROM subscriptions`
+		FROM subscriptions
+		WHERE ($1::uuid IS NULL OR user_id = $1)
+			AND ($2::text = '' OR service_name = $2)
+			AND (
+				$3::date IS NULL
+				OR $4::date IS NULL
+				OR (start_date <= $4 AND (end_date IS NULL OR end_date >= $3))
+			)
+		ORDER BY created_at DESC
+		LIMIT $5 OFFSET $6`
 
-	args := make([]any, 0)
-	conditions := make([]string, 0)
-
-	if filter.UserID != nil {
-		args = append(args, *filter.UserID)
-		conditions = append(conditions, fmt.Sprintf("user_id = $%d", len(args)))
-	}
-
-	if filter.ServiceName != "" {
-		args = append(args, filter.ServiceName)
-		conditions = append(conditions, fmt.Sprintf("service_name = $%d", len(args)))
-	}
-
-	if filter.PeriodStart != nil && filter.PeriodEnd != nil {
-		args = append(args, *filter.PeriodEnd)
-		conditions = append(conditions, fmt.Sprintf("start_date <= $%d", len(args)))
-
-		args = append(args, *filter.PeriodStart)
-		conditions = append(conditions, fmt.Sprintf("(end_date IS NULL OR end_date >= $%d)", len(args)))
-	}
-
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	query += " ORDER BY created_at DESC"
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, query, filterArgs(filter)...)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)
 	}
@@ -115,6 +96,34 @@ func (r *SubscriptionRepository) List(ctx context.Context, filter model.Subscrip
 	}
 
 	return subscriptions, nil
+}
+
+func (r *SubscriptionRepository) Total(ctx context.Context, filter model.SubscriptionFilter) (int, error) {
+	query := `
+		SELECT COALESCE(SUM(price * (
+			(EXTRACT(YEAR FROM AGE(overlap_end, overlap_start))::int * 12)
+			+ EXTRACT(MONTH FROM AGE(overlap_end, overlap_start))::int
+			+ 1
+		)), 0)
+		FROM (
+			SELECT
+				price,
+				GREATEST(start_date, $3::date) AS overlap_start,
+				LEAST(COALESCE(end_date, $4::date), $4::date) AS overlap_end
+			FROM subscriptions
+			WHERE ($1::uuid IS NULL OR user_id = $1)
+				AND ($2::text = '' OR service_name = $2)
+				AND start_date <= $4::date
+				AND (end_date IS NULL OR end_date >= $3::date)
+		) periods`
+
+	args := filterArgs(filter)
+	var total int
+	if err := r.db.QueryRowContext(ctx, query, args[0], args[1], args[2], args[3]).Scan(&total); err != nil {
+		return 0, fmt.Errorf("total subscriptions: %w", err)
+	}
+
+	return total, nil
 }
 
 func (r *SubscriptionRepository) Update(ctx context.Context, subscription model.Subscription) (model.Subscription, error) {
@@ -195,4 +204,30 @@ func scanSubscription(row scanner) (model.Subscription, error) {
 	}
 
 	return subscription, nil
+}
+
+func filterArgs(filter model.SubscriptionFilter) []any {
+	var userID any
+	if filter.UserID != nil {
+		userID = *filter.UserID
+	}
+
+	var periodStart any
+	if filter.PeriodStart != nil {
+		periodStart = *filter.PeriodStart
+	}
+
+	var periodEnd any
+	if filter.PeriodEnd != nil {
+		periodEnd = *filter.PeriodEnd
+	}
+
+	return []any{
+		userID,
+		filter.ServiceName,
+		periodStart,
+		periodEnd,
+		filter.Limit,
+		filter.Offset,
+	}
 }
